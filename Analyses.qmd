@@ -1,0 +1,593 @@
+---
+title: "Analyses"
+author: "DALLAORANE Wilfred"
+format: 
+  html:
+    theme: flatly      # Choisir un thème Quarto 
+    toc: true          # Activer la table des matières
+    toc-depth: 3       # Profondeur de la table des matières
+    self-contained: true # Intégrer les graphiques dans le HTML
+    toc-title: "Sommaire"  
+    code-fold: true      # Permet de replier/déplier le code
+    code-tools: true      # Ajoute des outils pour copier le code
+execute:
+  echo: true
+  warning: false
+  message: false
+  results: "markup" 
+---
+
+```{r}
+library(knitr)
+options(knitr.table.format = "html")  # Assure un bon affichage en HTML
+
+```
+
+# 1. Présentation des données réelles et analyses statistiques
+
+Dans cette étude, nous utilisons le jeu de données KG introduit par Klein et Goldberger (1964) dans leur ouvrage *An Economic Model of the United States, 1929-1952*. Ce jeu de données est particulièrement reconnu dans la littérature économétrique pour présenter des problèmes de multicolinéarité. Notre objectif étant d'étudier l’efficacité de la régression Ridge par rapport aux Moindres Carrés Ordinaires (MCO), ce jeu de données en fait une référence appropriée pour notre étude. Nous allons identifier les déterminants de la consommation.\
+
+## Importation des données KG
+
+Nous importons les données et examinons leurs premières lignes.
+
+```{r}
+# Charger les packages nécessaires
+library(multiColl)
+library(tidyverse)
+library(modelsummary)
+library("kableExtra")
+library(glmnet)
+library(gt)
+library(boot)
+library(lmridge)
+library(ggplot2)
+library(reshape2)
+library(ggcorrplot)
+library(car)
+```
+
+```{r}
+# Importer les données KG
+data("KG")
+# Aperçu des données
+head(KG)
+```
+
+Il est constitué de 14 obsevations et l'ensemble des variables comprend:
+
+-   **Consommation (consumption)** : Cette variable représente la consommation domestique des ménages, un indicateur clé de la demande agrégée dans l’économie américaine.
+
+
+-   **Revenu salarial (wage.income)** : Revenu qui provient des activités salariées.
+
+-   **Revenu non agricole (non.farm.income)** : Revenu provenant à partir d’activités autres que l'agriculture et emplois salariés. Cela pourrait être des revenus issus d’entreprises indépendantes ou d’investissements.
+
+-   **Revenu agricole (farm.income)** : Revenus provenant des activités agricoles, principalement, représentant une variable importante dans l'économie des États-Unis pendant la période étudiée.\*
+
+Ces variables devraient avoir un effet positif sur la consommation. Nous admettons que ces observations correspondent à des données agrégées, exprimées en millions de dollars.
+
+Présentons les statistiques descriptives des variables étudiées, afin de décrire leurs natures.
+
+```{r}
+# Calculer les statistiques descriptives
+summary_stats <- data.frame(
+  Moyenne = sapply(KG, mean),
+  Mediane = sapply(KG, median),
+  EcartType = sapply(KG, sd),
+  Minimum = sapply(KG, min),
+  Maximum = sapply(KG, max)
+)
+
+# Ajouter les noms des variables comme une colonne, en éliminant les conflits éventuels
+summary_stats <- tibble::rownames_to_column(summary_stats, var = "Variable")
+
+
+
+# Création du tableau avec gt
+summary_table <- summary_stats %>%
+  gt() %>%
+  tab_header(
+    title = md("**Statistiques Descriptives des Variables KG**"),
+    subtitle = "Résumé des principales mesures de tendance centrale et de dispersion"
+  ) %>%
+  fmt_number(
+    columns = c(Moyenne, Mediane, EcartType, Minimum, Maximum),
+    decimals = 3
+  ) %>%
+  cols_label(
+    Variable = "Variables",
+    Moyenne = "Moyenne",
+    Mediane = "Médiane",
+    EcartType = "Écart-Type",
+    Minimum = "Min",
+    Maximum = "Max"
+  ) %>%
+  tab_options(
+    table.width = pct(70),
+    column_labels.font.weight = "bold",
+    heading.align = "center"
+  ) 
+
+# Affichage du tableau
+summary_table
+
+
+```
+
+Les dépenses en consommation varient de 62,80 et 111,40 millions de dollars avec une moyenne de 87,12 millions de dollars, une médiane de 91 millions de dollars et un écart-type de 18,64 millions de dollars. Les résultats montrent également que le revenu salarial moyen est de 68,38 millions de de dollars répresentant ainsi la principale source de revenu de la population étudiées. Il varie entre 43,41 et 95,47 millions de dollars avec un écart-type de 18,88 millions de dollars et une mediane de 76,32 millions de dollars. Quant au revenu non agricole, il varie entre 17,09 et 37,58 millions de dollars avec une moyenne de 27,28 millions de dollars, une mediane de 28,18 millions de dollars et un écart-type de 7,09 millions de dollars. Enfin, le revenu agricole moyen est de 6,96 millions de dollars, une mediane de 7,3 millions de dollars (proche de la moyenne, indiquant une distribution symétrique), un écart-type de 2,07 millions de dollars. Il varie entre 3,96 et 9,85 millions de dollars.
+
+Les écart-types montrent que les variables **wage.income** et **consumption** présentent une variabilité importante, ce qui pourrait influencer les résultats des régressions. Tandis que les variables **non.farm.income** et **farm.income** présentent une dispersion faible.
+
+Ces observations confirment l'importance d'une analyse pour détecter les éventuelles relations multicolinéaires entre ces variables, étant donné leur interdépendance économique potentielle.
+
+-   **Corrélations**
+
+```{r}
+# Calcul de la matrice de corrélation
+cor_matrix <- cor(KG, use = "pairwise.complete.obs")
+
+# Convertir en format long et filtrer uniquement le triangle inférieur
+cor_data <- as.data.frame(as.table(cor_matrix)) %>%
+  rename(Variable1 = Var1, Variable2 = Var2, Correlation = Freq) %>%
+  filter(as.numeric(Variable1) >= as.numeric(Variable2))  # Garder uniquement le triangle inférieur
+
+# Transformer en format large pour affichage triangulaire
+cor_wide <- cor_data %>%
+  pivot_wider(names_from = Variable2, values_from = Correlation)
+
+# Ajouter une colonne pour les noms des variables
+cor_wide <- cor_wide %>%
+  rename(Variables = Variable1)
+
+# Remplacer les NA par des vides uniquement dans l'affichage `gt()` avec `fmt_missing()`
+cor_table <- cor_wide %>%
+  gt() %>%
+  tab_header(
+    title = md("**Matrice de Corrélation des Variables KG**")
+  ) %>%
+  fmt_number(
+    columns = where(is.numeric),  # Appliquer le formatage aux colonnes numériques
+    decimals = 3
+  ) %>%
+  fmt_missing(
+    columns = everything(),  # Remplace les valeurs NA uniquement dans l'affichage
+    missing_text = ""
+  ) %>%
+  cols_label(
+    Variables = "Variables"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_options(
+    table.width = pct(80),
+    column_labels.font.weight = "bold",
+    heading.align = "center"
+  )
+
+# Affichage du tableau
+cor_table
+# ---- Heatmap triangulaire ----
+
+# Masquer la partie supérieure de la matrice
+cor_matrix[upper.tri(cor_matrix)] <- NA
+
+# Heatmap triangulaire
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE, colors = c("blue", "white", "red")) +
+  ggtitle("Corrélations entre les Variables ")
+```
+
+Les corrélations affichées dans la matrice montrent des niveaux élevés de corrélation entre plusieurs variables explicatives, ce qui suggère une forte multicolinéarité potentielle. Wage.income et non.farm.income présentent une corrélation de 0.943, tandis que wage.income et consumption sont corrélées à hauteur de 0.942. De plus, non.farm.income et consumption affichent une corrélation de 0.946. Farm.income présente une corrélation modérée avec les autres variables, variant entre 0.737 et 0.811. Ces valeurs proches de 1 indiquent une forte interdépendance entre ces variables, ce qui est un indicateur clair de multicolinéarité sévère.
+
+# 2. Estimations
+
+Dans cette section, nous allons faire une estimation par les moindres carrés, et appliquer la regression Ridge.
+
+## a. Estimation par les Moindres Carrés Ordinaires.
+
+### Équation à estimer :
+
+$$
+\text{consumption}_i = \beta_0 + \beta_1 \cdot \text{wage.income}_i + \beta_2 \cdot \text{non.farm.income}_i + \beta_3 \cdot \text{farm.income}_i + \epsilon_i
+$$
+
+```{r}
+# Créez le modèle de régression
+model_mco <- lm(consumption ~ wage.income + non.farm.income + farm.income, data = KG)
+
+# Résumé classique pour tester
+summary(model_mco)
+
+# Résumé avec modelsummary
+modelsummary(model_mco, stars = c('*'= .1, '**'=.05, '***'=0.01))
+```
+
+## Interprétation
+
+-   Qualité globale du modèle :
+
+    -   **R² = 0.9187** : Le modèle explique 91,87 % de la variance de la consommation.
+
+    -   **F-statistic (p \< 0.001)** : Le modèle est globalement significatif, au moins une des variables explicatives a un impact significatif sur la consommation.
+
+-   **Analyse des coefficients :**
+
+    -   La consommation moyenne est de 18,7 millions de dollars lorsque toutes les variables explicatives sont nulles.
+
+    -   **wage.income** : Coefficient = 0.3803, non significatif (p = 0,2511)
+
+    -   **non.farm.income** : Coefficient = 1.4186, significatif (p = 0.0772). Une augmentation du revenu non agricol de 1 millions de dollars augmente la consommation de 1,42 millions de dollars, citeris paribus.
+
+    -   **farm.income** : Coefficient = 0.5331, non significatif (p = 0.7113), pas d'impact sur la consommation.
+
+    ```         
+    Bien que le modèle explique une grande partie de la variance de la consommation (R² élevé), toutes les variables explicatives ne sont pas significatives. Cela peut être dû à une **multicolinéarité** ou à la taille réduite de échantillon (14 observations).
+    ```
+
+Nous allons passer à la détection de la multicolinéarité via le VIF et CN.
+
+## b. Détection de la multi colinéarité.
+
+```{r}
+# Vérification de la multicolinéarité
+## 1. Calcul des VIF
+vif_values <- car::vif(model_mco)  # Facteurs d'Inflation de la Variance
+# Création d'un tableau structuré avec gt
+vif_table <- data.frame(
+  Variable = names(vif_values),
+  VIF = round(vif_values, 4)
+)
+
+# Création du tableau gt
+vif_gt <- vif_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Facteurs d'Inflation de la Variance (VIF)**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(VIF),
+    decimals = 4
+  ) %>%
+  cols_label(
+    Variable = "Variable",
+    VIF = "Valeur du VIF"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+vif_gt
+
+```
+
+```{r}
+# Extraction de la matrice des variables explicatives (sans l'intercept)
+X <- model.matrix(model_mco)[, -1]  # Suppression de la colonne de l'intercept
+
+# Calcul de la matrice X'X
+XtX <- t(X) %*% X
+
+# Calcul des valeurs propres de la matrice X'X
+eigenvalues <- eigen(XtX)$values  # Extraction des valeurs propres
+
+# Identification des valeurs propres maximales et minimales
+eigen_max <- max(eigenvalues)  # Plus grande valeur propre
+eigen_min <- min(eigenvalues)  # Plus petite valeur propre
+
+# Calcul du Condition Number (CN) avec racine carrée
+cn <- sqrt(eigen_max / eigen_min)
+
+# Création du tableau des résultats avec arrondi à 2 décimales
+cn_table <- tibble(
+  Métriques = c("Valeur propre maximale", "Valeur propre minimale", "Condition Number (CN)"),
+  Valeur = round(c(eigen_max, eigen_min, cn), 2)  # Arrondi à 2 décimales
+)
+
+# Création du tableau gt
+cn_gt <- cn_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Number (CN) et Valeurs Propres**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(Valeur),
+    decimals = 2  # Affichage avec 2 décimales
+  ) %>%
+  cols_label(
+    Métriques = "Métriques",
+    Valeur = "Valeur"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+cn_gt
+# Condition Indices (CI) pour chaque valeur propre (racine de λ_max / λ_i)
+condition_indices <- sqrt(max(eigenvalues) / eigenvalues)
+
+# Création du tableau structuré
+cn_table <- tibble(
+  Variable = colnames(X),
+  `Condition Index (CI)` = round(condition_indices, 2)
+)
+
+# Affichage du tableau avec gt
+cn_gt <- cn_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Indices (CI)**"),
+    subtitle = "Mesure de la colinéarité par variable"
+  ) %>%
+  fmt_number(columns = vars(`Condition Index (CI)`), decimals = 2) %>%
+  cols_label(Variable = "Variable", `Condition Index (CI)` = "Condition Index") %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+cn_gt
+
+```
+
+**Interprétation:**
+
+Au moins une variable ( wage.income) dépasse 10, la multicolinéarité est problématique. On a non.farm.income qui proche de 10 également.
+
+## c. Estimation par la régression Ridge ordinaire.
+
+Pour cette estimation, nous allons utiliser le package glemmet qui va nous permettre de calculer et de visualiser les estimateurs.
+
+Il n’est pas possible d’utiliser de formule dans la fonction glmnet pour spéciﬁer la variable à expliquer et les variables explicatives. Il faut renseigner les variables explicatives dans une matrice. On utilise souvent la fonction model.matrix pour obtenir cette matrice. On aura les estimateurs ridge pour α = 0.
+
+```{r}
+
+# Créer la matrice des prédicteurs
+KG.X <- model.matrix(consumption ~ wage.income + non.farm.income + farm.income, data = KG)[,-1]
+# Définir la variable d'intérêt 
+KG.Y <- KG$consumption
+# Ajuster la régression Ridge
+ridge_model <- glmnet(KG.X, KG.Y, alpha = 0)  # alpha = 0 pour Ridge
+
+# Étape 4 : Afficher les résultats
+ridge_model
+
+
+
+```
+
+```{r}
+plot(ridge_model,main="Ridge KG en fonction de norme",ylim=c(-2,2))
+plot(ridge_model,xvar="lambda",main="Ridge KG en fonction de lambda",ylim=c(-2,2))
+```
+
+### choix du paramètre de régularisation λ
+
+Nous allons utiliser **cv.glmnet** pour effectuer une validation croisée et sélectionner la meilleure valeur de pénalisation (λ)
+
+```{r}
+# Validation croisée pour trouver les meilleurs lambda
+cv_ridge <- cv.glmnet(KG.X, KG.Y, alpha = 0)
+
+
+# Visualisation des erreurs en fonction de log(λ)
+plot(cv_ridge, main = "Validation croisée Ridge KG")
+
+
+
+lambda_min <- cv_ridge$lambda.min   # Lambda minimisant l'erreur
+lambda_1se <- cv_ridge$lambda.1se   # Lambda plus simple dans la borne 1SE
+
+cat("Meilleur lambda :", round(lambda_min, 2), "et", round(lambda_1se, 2), "\n")
+
+# Étape 4 : Ajuster la régression Ridge avec lmridge pour les deux lambdas
+ridge_model <- lmridge(consumption ~ wage.income + non.farm.income + farm.income, 
+                        data = KG, K = c(0,2.47, 14.45), scaling = "scaled")
+
+# Étape 5 : Afficher le résumé des modèles Ridge
+summary(ridge_model)
+vif.lmridge(ridge_model)
+rstats1.lmridge(ridge_model)$CN
+```
+
+## 3. Comparaison des Moindres Carrés Ordinaires et de la régression Ridge sur des données
+
+L'objectif de cette section est de comparer les performances des modèles MCO et Ridge en analysant la **précision des coefficients estimés**, leur **significativité statistique**, et l’impact de la **régularisation Ridge sur la multicolinéarité**. En nous basant sur la littérature existante, nous évaluerons si l'utilisation de Ridge permet d'améliorer l’interprétation des résultats et de stabiliser les estimations.
+
+```{r}
+# Valeurs de lambda spécifiées
+lambda_values <- c(2.47, 14.45)
+
+# Ajuster le modèle Ridge pour les deux valeurs de lambda
+ridge_model_t <- lmridge(consumption ~ wage.income + non.farm.income + farm.income, 
+                        data = KG, K = lambda_values, scaling = "scaled")
+
+#  1. Calcul des VIFs pour chaque lambda
+vif_values <- vif.lmridge(ridge_model_t)
+
+# Créer un tableau des VIFs
+vif_table <- data.frame(
+  Variable = colnames(KG[, -1]),  # Exclut la variable dépendante
+  VIF_Lambda_2.47 = vif_values[1, ],  # VIF pour lambda = 2.47
+  VIF_Lambda_14.45 = vif_values[2, ]  # VIF pour lambda = 14.45
+)
+
+# Afficher le tableau des VIFs avec gt
+vif_gt <- vif_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Facteurs d'Inflation de la Variance (VIF) après Ridge**"),
+    subtitle = "Détection de la multicolinéarité après régularisation"
+  ) %>%
+  fmt_number(columns = c(VIF_Lambda_2.47, VIF_Lambda_14.45), decimals = 2)
+
+vif_gt
+
+# 📌 2. Calcul du Condition Number (CN) après Ridge
+cn_values <- rstats1.lmridge(ridge_model_t)$CN
+
+# Créer un tableau pour CN
+cn_table <- data.frame(
+  Métrique = c("Condition Number (CN)"),
+  CN_Lambda_2.47 = cn_values[1],
+  CN_Lambda_14.45 = cn_values[2]
+)
+
+# Afficher le tableau CN avec gt
+cn_gt <- cn_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Number (CN) après Ridge**"),
+    subtitle = "Détection de la multicolinéarité après régularisation"
+  ) %>%
+  fmt_number(columns = c(CN_Lambda_2.47, CN_Lambda_14.45), decimals = 2)
+
+cn_gt
+
+
+```
+
+Après l’application de la régression Ridge, les effets de la multicolinéarité disparaissent presque totalement. Avec λ = 2.47, les VIF chutent à des valeurs très faibles, autour de 0.04 à 0.06, tandis que le CN diminue drastiquement à 2.04. Cette réduction du CN indique que la matrice des prédicteurs est maintenant bien conditionnée, rendant les estimations des coefficients beaucoup plus stables. En augmentant davantage λ à 14.45, l’effet de régularisation devient encore plus fort, avec des VIF qui tombent à zéro et un CN de seulement 1.18. Cela signifie que toutes les corrélations problématiques entre les variables explicatives ont été corrigées, garantissant un modèle bien plus robuste.
+
+Ainsi, la comparaison entre le MCO et la régression Ridge montre clairement l’efficacité de la régularisation pour stabiliser les estimations. Alors que le MCO souffre d’un problème important de colinéarité, Ridge permet de rendre le modèle plus fiable. Toutefois, un λ trop élevé peut lisser excessivement les coefficients, ce qui peut poser problème si l’on cherche à interpréter leurs impacts individuels. Dans ce contexte, λ = 2.47 semble être un bon compromis, car il réduit la colinéarité sans trop altérer la structure du modèle.
+
+```{r}
+# Extraction des résultats MCO (OLS)
+summary_mco <- summary(model_mco)
+coeff_mco <- summary_mco$coefficients
+mse_mco <- mean(summary_mco$residuals^2)
+r2_mco <- summary_mco$r.squared
+
+# Extraction des statistiques Ridge avec rstats1.lmridge()
+stats_ridge <- rstats1.lmridge(ridge_model_t)
+
+# Extraction des résultats Ridge pour λ = 2.47
+summary_ridge_2.47 <- summary(ridge_model_t)$summaries[[1]]
+coeff_ridge_2.47 <- summary_ridge_2.47$coefficients[, "Estimate"]
+se_ridge_2.47 <- summary_ridge_2.47$coefficients[, "StdErr (Sc)"]
+t_ridge_2.47 <- summary_ridge_2.47$coefficients[, "t-value (Sc)"]
+p_ridge_2.47 <- summary_ridge_2.47$coefficients[, "Pr(>|t|)"]
+
+mse_ridge_2.47 <- stats_ridge$mse[1]
+r2_ridge_2.47 <- stats_ridge$R2[1]
+
+# Extraction des résultats Ridge pour λ = 14.45
+summary_ridge_14.45 <- summary(ridge_model_t)$summaries[[2]]
+coeff_ridge_14.45 <- summary_ridge_14.45$coefficients[, "Estimate"]
+se_ridge_14.45 <- summary_ridge_14.45$coefficients[, "StdErr (Sc)"]
+t_ridge_14.45 <- summary_ridge_14.45$coefficients[, "t-value (Sc)"]
+p_ridge_14.45 <- summary_ridge_14.45$coefficients[, "Pr(>|t|)"]
+
+mse_ridge_14.45 <- stats_ridge$mse[2]
+r2_ridge_14.45 <- stats_ridge$R2[2]
+
+# Création des tableaux et affichage
+table_mco <- data.frame(
+  Variable = rownames(coeff_mco),
+  Coefficient = coeff_mco[,1],
+  Standard_Error = coeff_mco[,2],
+  T_value = coeff_mco[,3],
+  P_value = coeff_mco[,4]
+)
+
+table_mco <- rbind(table_mco, 
+                   c("MSE", mse_mco, "", "", ""),
+                   c("R²", r2_mco, "", "", ""))
+
+table_ridge_2.47 <- data.frame(
+  Variable = rownames(summary_ridge_2.47$coefficients),
+  Coefficient = coeff_ridge_2.47,
+  Standard_Error = se_ridge_2.47,
+  T_value = t_ridge_2.47,
+  P_value = p_ridge_2.47
+)
+
+table_ridge_2.47 <- rbind(table_ridge_2.47, 
+                          c("MSE", mse_ridge_2.47, "", "", ""),
+                          c("R²", r2_ridge_2.47, "", "", ""))
+
+table_ridge_14.45 <- data.frame(
+  Variable = rownames(summary_ridge_14.45$coefficients),
+  Coefficient = coeff_ridge_14.45,
+  Standard_Error = se_ridge_14.45,
+  T_value = t_ridge_14.45,
+  P_value = p_ridge_14.45
+)
+
+table_ridge_14.45 <- rbind(table_ridge_14.45, 
+                           c("MSE", mse_ridge_14.45, "", "", ""),
+                           c("R²", r2_ridge_14.45, "", "", ""))
+
+# Formatage des tableaux avec gt()
+gt_mco <- table_mco %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression MCO (OLS)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+gt_ridge_2.47 <- table_ridge_2.47 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression Ridge (λ = 2.47)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+gt_ridge_14.45 <- table_ridge_14.45 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression Ridge (λ = 14.45)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+# Affichage des tableaux
+gt_mco
+gt_ridge_2.47
+gt_ridge_14.45
+
+```
+
+Dans le modèle MCO, les coefficients sont relativement élevés, mais plusieurs ne sont pas significatifs. Par exemple, *wage.income* et *farm.income* présentent des p-values élevées (respectivement 0.25 et 0.71), ce qui signifie qu'ils ne sont pas significatifs au seuil de 5 %. Le R² de 0.918 montre que le modèle explique une grande part de la variance des données, mais cette performance est potentiellement biaisée par la multicolinéarité. Le MSE, relativement bas à 26.23, suggère un bon ajustement, mais l'instabilité des coefficients due à la colinéarité peut affecter leur interprétabilité.
+
+Avec Ridge et λ = 2.47, on constate une réduction des coefficients, ce qui est attendu avec la régularisation. Toutefois, contrairement au MCO, les variables explicatives deviennent plus significatives, avec des p-values très faibles. Cela indique que la pénalisation aide à réduire l’impact de la colinéarité et stabilise les coefficients. En contrepartie, le MSE augmente fortement à 763.34, et le R² chute à 0.239, indiquant une baisse de la capacité prédictive du modèle. Cela illustre le compromis de Ridge : une meilleure stabilité des coefficients contre une moindre capacité d'ajustement aux données.
+
+Lorsque λ est poussé à 14.45, l'effet de régularisation est encore plus marqué. Les coefficients sont encore plus réduits, et les erreurs standard diminuent, traduisant une plus grande robustesse du modèle. Cependant, le MSE explose à 1552.17 et le R² tombe à seulement 0.021, signifiant que le modèle capture à peine la variance des données. Cela montre qu’une régularisation excessive élimine non seulement la multicolinéarité mais réduit également drastiquement la capacité prédictive.
+
+En conclusion, le MCO est performant en termes de R² et de MSE mais souffre fortement de la multicolinéarité, ce qui rend ses coefficients peu fiables. Ridge λ = 2.47 est un bon compromis, en améliorant la significativité des coefficients et en réduisant la colinéarité, bien que la perte de R² soit notable. Ridge λ = 14.45 pousse la régularisation à l'extrême, réduisant davantage la variance des coefficients mais au prix d'une très faible capacité prédictive. Ainsi, si l'objectif est d'avoir un modèle robuste et interprétable tout en minimisant les effets de la colinéarité, Ridge avec λ = 2.47 semble être le meilleur choix.
+
+```{r}
+# Charger le dataset
+data(longley)
+
+# Afficher un aperçu des données
+head(longley)
+# Régression linéaire multiple (MCO)
+modele <- lm(Employed ~ GNP + GNP.deflator + Unemployed + Armed.Forces + Population + Year, data = longley)
+
+# Afficher un résumé des résultats
+summary(modele)
+vif(modele)
+```

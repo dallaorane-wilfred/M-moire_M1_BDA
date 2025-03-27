@@ -1,0 +1,232 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r}
+library(multiColl)
+library(tidyverse)
+library(modelsummary)
+library("kableExtra")
+library(glmnet)
+library(gt)
+library(boot)
+library(lmridge)
+library(ggplot2)
+library(reshape2)
+library(ggcorrplot)
+library(car)
+library(AER)
+library(lmtest)
+library(readxl)
+```
+
+```{r}
+DF <- read_excel("~/BDA S7/Semestre 1/Mémoire/Essai.xlsx")
+colnames(DF)[1] <- "Year"
+```
+
+```{r}
+# Supprimer la colonne "Year" si elle n'est pas pertinente
+data_filtered <- DF %>% select(-Year)
+# ---- 2. Matrice de corrélation ----
+cor_matrix <- cor(data_filtered)
+
+# Convertir en format long et filtrer uniquement le triangle inférieur
+cor_data <- as.data.frame(as.table(cor_matrix)) %>%
+  rename(Variable1 = Var1, Variable2 = Var2, Correlation = Freq) %>%
+  filter(as.numeric(Variable1) >= as.numeric(Variable2))  # Garder uniquement le triangle inférieur
+
+# Transformer en format large pour affichage triangulaire
+cor_wide <- cor_data %>%
+  pivot_wider(names_from = Variable2, values_from = Correlation)
+
+# Ajouter une colonne pour les noms des variables
+cor_wide <- cor_wide %>%
+  rename(Variables = Variable1)
+
+# Remplacer les NA par des vides uniquement dans l'affichage `gt()` avec `fmt_missing()`
+cor_table <- cor_wide %>%
+  gt() %>%
+  tab_header(
+    title = md("**Matrice de Corrélation des Variables**")
+  ) %>%
+  fmt_number(
+    columns = where(is.numeric),  # Appliquer le formatage aux colonnes numériques
+    decimals = 3
+  ) %>%
+  fmt_missing(
+    columns = everything(),  # Remplace les valeurs NA uniquement dans l'affichage
+    missing_text = ""
+  ) %>%
+  cols_label(
+    Variables = "Variables"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_options(
+    table.width = pct(80),
+    column_labels.font.weight = "bold",
+    heading.align = "center"
+  )
+
+# Affichage du tableau
+cor_table
+
+# ---- 3. Heatmap triangulaire ----
+
+# Masquer la partie supérieure de la matrice
+cor_matrix[upper.tri(cor_matrix)] <- NA
+
+# Heatmap triangulaire des corrélations
+pdf("Heapmap_CBN.pdf", width = 7, height = 5)  # nom et taille du PDF
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE, colors = c("blue", "white", "red")) +
+  ggtitle("Corrélations entre les Variables")
+dev.off()  
+```
+
+```{r}
+model <- lm(GDP ~ Agriculture + Industry + Services + Inflation + Pop.grow + Construction + Trade + Electricity, data = data_filtered)  # GDP est dans X
+
+# Afficher le résumé du modèle
+summary(model)
+
+
+# Calculer les Variance Inflation Factors (VIF)
+vif_values <- vif(model)
+
+# Afficher les résultats VIF
+print(vif_values)
+```
+
+```{r}
+# Extraction de la matrice des variables explicatives (sans l'intercept)
+X <- model.matrix(model)[, -1]  # Suppression de la colonne de l'intercept
+
+# Calcul de la matrice X'X
+XtX <- t(X) %*% X
+
+# Calcul des valeurs propres de la matrice X'X
+eigenvalues <- eigen(XtX)$values  # Extraction des valeurs propres
+
+# Identification des valeurs propres maximales et minimales
+eigen_max <- max(eigenvalues)  # Plus grande valeur propre
+eigen_min <- min(eigenvalues)  # Plus petite valeur propre
+
+# Calcul du Condition Number (CN) avec racine carrée
+cn <- sqrt(eigen_max / eigen_min)
+
+# Création du tableau des résultats avec arrondi à 2 décimales
+cn_table <- tibble(
+  Métriques = c("Valeur propre maximale", "Valeur propre minimale", "Condition Number (CN)"),
+  Valeur = round(c(eigen_max, eigen_min, cn), 2)  # Arrondi à 2 décimales
+)
+
+# Création du tableau gt
+cn_gt <- cn_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Number (CN) et Valeurs Propres**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(Valeur),
+    decimals = 2  # Affichage avec 2 décimales
+  ) %>%
+  cols_label(
+    Métriques = "Métriques",
+    Valeur = "Valeur"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+cn_gt
+```
+
+```{r}
+# Calcul des VIF
+vif_values <- car::vif(model)  # Facteurs d'Inflation de la Variance
+
+# Création d'un tableau structuré avec gt
+vif_table <- data.frame(
+  Variable = names(vif_values),
+  VIF = round(vif_values, 4)
+)
+
+# Création du tableau gt
+vif_gt <- vif_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Facteurs d'Inflation de la Variance (VIF)**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(VIF),
+    decimals = 4
+  ) %>%
+  cols_label(
+    Variable = "Variable",
+    VIF = "Valeur du VIF"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+vif_gt
+```
+
+```{r}
+data <- data_filtered
+# Étape 1 : Créer la matrice des prédicteurs (exclure l'intercept)
+X1 <- model.matrix(GDP ~ Agriculture + Industry + Services + Inflation + Pop.grow + Construction + Trade + Electricity, data = data)[, -1]
+
+# Étape 2 : Définir la variable cible
+y1 <- data$GDP
+
+# Étape 3 : Ajuster la régression Ridge avec validation croisée (alpha = 0 pour Ridge)
+cv_ridge <- cv.glmnet(X1, y1, alpha = 0)
+
+# Visualisation des erreurs en fonction de log(λ)
+pdf("validation_croisee_ridge.pdf", width = 7, height = 5)  # nom et taille du PDF
+plot(cv_ridge, main = "Validation croisée Ridge")           # ton graphique
+dev.off()  
+
+# Extraction des valeurs optimales de lambda
+lambda_min <- cv_ridge$lambda.min   # Lambda minimisant l'erreur
+lambda_1se <- cv_ridge$lambda.1se   # Lambda dans la borne 1SE
+
+cat("Meilleur lambda :", round(lambda_min, 2), "et", round(lambda_1se, 2), "\n")
+
+# Étape 4 : Ajuster le modèle Ridge avec ces lambdas
+ridge_model1 <- lmridge(GDP ~ Agriculture + Industry + Services + Inflation + Pop.grow + Construction + Trade + Electricity, data = data, K = c(round(lambda_min), round(lambda_1se)), scaling = "scaled")
+
+# Étape 5 : Afficher le résumé du modèle Ridge
+summary(ridge_model1)
+
+# Étape 6 : Vérifier la réduction des VIF après Ridge
+vif.lmridge(ridge_model1)
+
+# Étape 7 : Calcul du Condition Number (CN) pour détecter la multicolinéarité résiduelle
+rstats1.lmridge(ridge_model1)$CN
+```
+
+```{r}
+stats_ridge1 <- rstats1.lmridge(ridge_models1)
+stats_ridge1
+```

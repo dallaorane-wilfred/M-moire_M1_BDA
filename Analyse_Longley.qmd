@@ -1,0 +1,884 @@
+---
+title: "Analyses2"
+author: "DALLAORANE Wilfred"
+format: 
+  html:
+    theme: flatly      # Choisir un thème Quarto 
+    toc: true          # Activer la table des matières
+    toc-depth: 3       # Profondeur de la table des matières
+    self-contained: true # Intégrer les graphiques dans le HTML
+    toc-title: "Sommaire"  
+    code-fold: true      # Permet de replier/déplier le code
+    code-tools: true      # Ajoute des outils pour copier le code
+execute:
+  echo: true
+  warning: false
+  message: false
+  results: "markup"
+---
+
+```{r}
+# Charger les packages nécessaires
+library(multiColl)
+library(tidyverse)
+library(modelsummary)
+library("kableExtra")
+library(glmnet)
+library(gt)
+library(boot)
+library(lmridge)
+library(ggplot2)
+library(reshape2)
+library(ggcorrplot)
+library(car)
+library(AER)
+library(lmtest)
+```
+
+# 1-Présentation des données réelles et analyses statistiques
+
+Dans cette étude, nous utilisons le jeu de données **Longley**, qui fait partie des bases de données classiques en économétrie. Ce jeu de données a été publié par J.W. Longley en 1967 et est largement reconnu pour illustrer des problèmes de multicolinéarité dans les régressions économiques. Il contient des observations annuelles sur l'économie des États-Unis entre 1947 et 1962.
+
+Le jeu de données **Longley** est composé de six variables explicatives et d’une variable réponse :
+
+-   **GNP.deflator** : Indice de déflateur du Produit National Brut.
+
+-   **GNP** : Produit National Brut en milliards de dollars.
+
+-   **Unemployed** : Nombre de chômeurs en milliers.
+
+-   **Armed.Forces** : Nombre de personnes dans les forces armées en milliers.
+
+-   **Population** : Population totale en milliers.
+
+-   **Year** : Année.
+
+-   **Employed** : Nombre de personnes employées en milliers.
+
+L'objectif de cette étude est d'examiner l'efficacité de la régression Ridge par rapport aux Moindres Carrés Ordinaires (MCO). Le jeu de données **Longley** est particulièrement intéressant pour cette analyse en raison de la forte collinéarité entre ses variables explicatives. Nous allons identifier les facteurs influençant le niveau d'emploi aux États-Unis durant cette période.
+
+## Importation des données KG
+
+Nous importons les données et examinons leurs premières lignes.
+
+```{r}
+# Charger le dataset
+data("longley")
+
+# Afficher un aperçu des données
+head(longley)
+
+
+```
+
+```{r}
+# Exclure la variable Year avant le calcul des statistiques descriptives
+summary_stats <- longley %>%
+  select(-Year) %>%  # Supprime la colonne Year
+  summarise_all(list(
+    Moyenne = mean,
+    Mediane = median,
+    EcartType = sd,
+    Minimum = min,
+    Maximum = max
+  )) %>%
+  pivot_longer(cols = everything(), names_to = c("Variable", ".value"), names_sep = "_")
+
+# Création du tableau avec gt
+summary_table <- summary_stats %>%
+  gt() %>%
+  tab_header(
+    title = md("**Statistiques Descriptives des Variables Longley**"),
+    subtitle = "Résumé des principales mesures de tendance centrale et de dispersion"
+  ) %>%
+  fmt_number(
+    columns = c(Moyenne, Mediane, EcartType, Minimum, Maximum),
+    decimals = 3
+  ) %>%
+  cols_label(
+    Variable = "Variables",
+    Moyenne = "Moyenne",
+    Mediane = "Médiane",
+    EcartType = "Écart-Type",
+    Minimum = "Min",
+    Maximum = "Max"
+  ) %>%
+  tab_options(
+    table.width = pct(70),
+    column_labels.font.weight = "bold",
+    heading.align = "center"
+  ) 
+
+# Affichage du tableau
+summary_table
+
+```
+
+Les données économiques des États-Unis entre **1947 et 1962** révèlent plusieurs tendances intéressantes.
+
+-   L’indice de déflateur du PNB (GNP.deflator) oscille entre 83,00 et 116,90 avec une moyenne de 101,68 et une médiane de 100,60. L’écart-type de 10,79 montre une variabilité relativement modérée, ce qui reflète l’évolution des prix au cours de cette période.
+
+-   Le Produit National Brut (GNP) varie entre 234,289 et 554,894 milliards de dollars, avec une moyenne de 387,69 milliards et une médiane de 381,43 milliards de dollars. L’écart-type est de 99,40 milliards, indiquant une forte variabilité du PIB sur cette période.
+
+-   Le taux de chômage (Unemployed) présente une dispersion marquée, oscillant entre 187 000 et 480 600 individus avec une moyenne de 319 331 chômeurs et un écart-type de 93 446. La médiane est proche de la moyenne (314 350), indiquant une distribution relativement équilibrée.
+
+-   Les effectifs des forces armées (Armed.Forces) affichent une forte variabilité avec une moyenne de 260 669 militaires, un écart-type de 69 592 et des valeurs extrêmes comprises entre 145 600 et 359 400.
+
+-   La population totale varie de 107,61 à 130,08 millions d’habitants, avec une moyenne de 117,42 millions et un écart-type de 6,96 millions. La médiane est 116,80 millions, proche de la moyenne, suggérant une évolution linéaire de la population.
+
+-   L’emploi total (Employed) est compris entre 60,17 et 70,55 millions de travailleurs avec une moyenne de 65,32 millions, une médiane de 65,50 millions et un écart-type de 3,51 millions.
+
+Les écarts-types élevés des variables GNP, Unemployed et Armed.Forces suggèrent une variabilité importante, pouvant influencer les résultats de modèles économétriques comme la régression linéaire. En revanche, la Population et l’Emploi présentent une dispersion plus faible, ce qui reflète une évolution plus stable.
+
+L’analyse de ces statistiques met en évidence la nécessité d’examiner les corrélations entre ces variables pour détecter d’éventuels problèmes de **multicolinéarité**. Cette interdépendance économique pourrait affecter la robustesse des modèles économétriques utilisés pour prédire l’emploi aux États-Unis.
+
+```{r}
+
+longley_filtered <- longley %>% select(-Year)
+
+# Calcul de la matrice de corrélation
+cor_matrix <- cor(longley_filtered)
+
+# Convertir en format long et filtrer uniquement le triangle inférieur
+cor_data <- as.data.frame(as.table(cor_matrix)) %>%
+  rename(Variable1 = Var1, Variable2 = Var2, Correlation = Freq) %>%
+  filter(as.numeric(Variable1) >= as.numeric(Variable2))  # Garder uniquement le triangle inférieur
+
+# Transformer en format large pour affichage triangulaire
+cor_wide <- cor_data %>%
+  pivot_wider(names_from = Variable2, values_from = Correlation)
+
+# Ajouter une colonne pour les noms des variables
+cor_wide <- cor_wide %>%
+  rename(Variables = Variable1)
+
+# Remplacer les NA par des vides uniquement dans l'affichage `gt()` avec `fmt_missing()`
+cor_table <- cor_wide %>%
+  gt() %>%
+  tab_header(
+    title = md("**Matrice de Corrélation des Variables**")
+  ) %>%
+  fmt_number(
+    columns = where(is.numeric),  # Appliquer le formatage aux colonnes numériques
+    decimals = 3
+  ) %>%
+  fmt_missing(
+    columns = everything(),  # Remplace les valeurs NA uniquement dans l'affichage
+    missing_text = ""
+  ) %>%
+  cols_label(
+    Variables = "Variables"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_options(
+    table.width = pct(80),
+    column_labels.font.weight = "bold",
+    heading.align = "center"
+  )
+
+# Affichage du tableau
+cor_table
+
+# ---- Heatmap triangulaire ----
+
+# Masquer la partie supérieure de la matrice
+cor_matrix[upper.tri(cor_matrix)] <- NA
+
+# Heatmap triangulaire des corrélations
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE, colors = c("blue", "white", "red")) +
+  ggtitle("Corrélations entre les Variables")
+
+pdf("Corrélations_entre_Variables_Longley.pdf", width = 7, height = 5)  # nom et taille du PDF
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE, colors = c("blue", "white", "red")) +
+  ggtitle("Corrélations entre les Variables Longley")     # ton graphique
+dev.off()  
+```
+
+Les corrélations affichées dans la matrice montrent des niveaux élevés de corrélation entre plusieurs variables explicatives, ce qui suggère une forte multicolinéarité potentielle. **GNP.deflator et GNP** présentent une corrélation de **0.992**, tandis que **GNP et Employed** sont corrélés à hauteur de **0.984**. De plus, **Population et GNP** affichent une corrélation de **0.991**. **Unemployed** présente une corrélation modérée avec les autres variables, variant entre **-0.177 et 0.687**. Ces valeurs proches de **1** indiquent une forte interdépendance entre ces variables, ce qui est un indicateur clair de multicolinéarité sévère.
+
+# 2. Estimations
+
+Dans cette section, nous allons faire une estimation par les moindres carrés, et appliquer la regression Ridge.
+
+## a. Estimation par les Moindres Carrés Ordinaires.
+
+### Équation à estimer :
+
+$$
+\text{Employed}_i = \beta_0 + \beta_1 \cdot \text{GNP.deflator}_i + \beta_2 \cdot \text{GNP}_i + \beta_3 \cdot \text{Unemployed}_i + \beta_4 \cdot \text{Armed.Forces}_i + \beta_5 \cdot \text{Population}_i + \epsilon_i
+$$
+
+```{r}
+# Régression linéaire
+model <- lm(Employed ~ GNP.deflator + GNP + Unemployed +  Armed.Forces + Population, data = longley)
+
+# Résumé du modèle
+summary(model)
+modelsummary(model, stars = c('*'= .1, '**'=.05, '***'=0.01))
+```
+
+### **Interprétation des Résultats de la Régression Linéaire sur les Données Longley**
+
+#### **Qualité Globale du Modèle :**
+
+-   R²=0.9874: Le modèle explique **98,74 %** de la variance de l’emploi (Employed). C’est un très bon ajustement.
+
+-   R² ajusté = 0.9811: Très proche du R² simple, ce qui confirme que le modèle reste performant même après correction du nombre de variables.
+
+-   F-statistic = 156.4 (p-value \< 0.001), le modèle est globalement significatif : au moins une variable explicative influence significativement l’emploi.
+
+#### **Analyse des Coefficients :**
+
+Les coefficients indiquent l’effet marginal de chaque variable explicative sur l’emploi **(exprimé en milliers de travailleurs).**
+
+-   **Intercept =** 92.461 (p = 0.0252, significatif à 5%)\
+    Lorsqu’aucune variable explicative n’est prise en compte, l’emploi théorique est de 92 461 personnes.
+
+-   **GNP.deflator** (-0.0486, p = 0.7217, non significatif)\
+    L’indice du déflateur du PNB n’a pas d’impact statistiquement significatif sur l’emploi.
+
+-   **GNP (0.0720,** p = 0.0467, significatif à 5%)\
+    Une augmentation du PNB de 1 milliard de dollars entraîne une hausse de 72 emplois, toutes choses égales par ailleurs. Cet effet est statistiquement significatif.
+
+-   **Unemployed** (0.0013, p = 0.3788, non significatif)\
+    Une augmentation de 1 000 chômeurs n’a pas d’effet significatif sur l’emploi, ce qui pourrait être dû à des effets de multicolinéarité.
+
+-   **Armed.Forces** (-0.0056, p = 0.0765, significatif à 10%)\
+    Une augmentation de 1 000 militaires est associée à une baisse d’environ 5,6 emplois civils, toutes choses égales par ailleurs. Cela pourrait suggérer une substitution entre emploi militaire et civil.
+
+-   **Population** (0.3003, p = 0.2498, non significatif)\
+    Une augmentation de 1 000 habitants entraîne en moyenne 300 nouveaux emplois, mais cet effet n’est pas statistiquement significatif.
+
+    Plusieurs variables sont non significatives malgré un R² très élevé, ce qui suggère que certaines d’entre elles apportent des informations redondantes.
+
+    La faible taille d’échantillon (16 observations) peut expliquer l’absence de significativité de certaines variables malgré un bon ajustement global.
+
+## b. Détection de la multi colinéarité.
+
+#### VIF
+
+```{r}
+# Calcul des VIF
+vif_values <- car::vif(model)  # Facteurs d'Inflation de la Variance
+
+# Création d'un tableau structuré avec gt
+vif_table <- data.frame(
+  Variable = names(vif_values),
+  VIF = round(vif_values, 4)
+)
+
+# Création du tableau gt
+vif_gt <- vif_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Facteurs d'Inflation de la Variance (VIF)**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(VIF),
+    decimals = 4
+  ) %>%
+  cols_label(
+    Variable = "Variable",
+    VIF = "Valeur du VIF"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+vif_gt
+
+```
+
+#### CN
+
+```{r}
+
+# Extraction de la matrice des variables explicatives (sans l'intercept)
+X <- model.matrix(model)[, -1]  # Suppression de la colonne de l'intercept
+
+# Calcul de la matrice X'X
+XtX <- t(X) %*% X
+
+# Calcul des valeurs propres de la matrice X'X
+eigenvalues <- eigen(XtX)$values  # Extraction des valeurs propres
+
+# Identification des valeurs propres maximales et minimales
+eigen_max <- max(eigenvalues)  # Plus grande valeur propre
+eigen_min <- min(eigenvalues)  # Plus petite valeur propre
+
+# Calcul du Condition Number (CN) avec racine carrée
+cn <- sqrt(eigen_max / eigen_min)
+
+# Création du tableau des résultats avec arrondi à 2 décimales
+cn_table <- tibble(
+  Métriques = c("Valeur propre maximale", "Valeur propre minimale", "Condition Number (CN)"),
+  Valeur = round(c(eigen_max, eigen_min, cn), 2)  # Arrondi à 2 décimales
+)
+
+# Création du tableau gt
+cn_gt <- cn_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Number (CN) et Valeurs Propres**"),
+    subtitle = "Détection de la multicolinéarité"
+  ) %>%
+  fmt_number(
+    columns = vars(Valeur),
+    decimals = 2  # Affichage avec 2 décimales
+  ) %>%
+  cols_label(
+    Métriques = "Métriques",
+    Valeur = "Valeur"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+cn_gt
+
+# ---- Condition Index (CI) ----
+
+# Condition Index (CI) pour chaque valeur propre (racine de λ_max / λ_i)
+condition_indices <- sqrt(max(eigenvalues) / eigenvalues)
+
+# Création du tableau structuré
+ci_table <- tibble(
+  Variable = colnames(X),
+  `Condition Index (CI)` = round(condition_indices, 2)
+)
+
+# Affichage du tableau avec gt
+ci_gt <- ci_table %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Indices (CI)**"),
+    subtitle = "Mesure de la colinéarité par variable"
+  ) %>%
+  fmt_number(columns = vars(`Condition Index (CI)`), decimals = 2) %>%
+  cols_label(Variable = "Variable", `Condition Index (CI)` = "Condition Index") %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "gray70", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+# Affichage du tableau
+ci_gt
+
+```
+
+Les résultats du VIF et des indices de condition révèlent une **multicolinéarité sévère**. Les valeurs de VIF sont extrêmement élevées, notamment pour **GNP (639.05)**, **Population (339.01)** et **GNP.deflator (130.83)**, ce qui indique une forte redondance d’information entre ces variables. De plus, l’indice de condition pour **Population (500.69)** confirme une **quasi-colinéarité** entre certaines variables explicatives. Cette situation peut **biaisser les estimations** et rendre les coefficients instables. Une correction est nécessaire via une **régression Ridge**.
+
+## c. Estimation par la régression Ridge ordinaire.
+
+Pour cette estimation, nous allons utiliser le package glemmet qui va nous permettre de calculer et de visualiser les estimateurs.
+
+Il n’est pas possible d’utiliser de formule dans la fonction glmnet pour spéciﬁer la variable à expliquer et les variables explicatives. Il faut renseigner les variables explicatives dans une matrice. On utilise souvent la fonction model.matrix pour obtenir cette matrice. On aura les estimateurs ridge pour α = 0.
+
+```{r}
+# Étape 1 : Créer la matrice des prédicteurs (exclure l'intercept)
+longley_X <- model.matrix(Employed ~ GNP.deflator + GNP + Unemployed + Armed.Forces + Population, data = longley)[, -1]
+
+# Étape 2 : Définir la variable d'intérêt
+longley_Y <- longley$Employed
+
+# Étape 3 : Ajuster la régression Ridge (alpha = 0 pour Ridge)
+ridge_model <- glmnet(longley_X, longley_Y, alpha = 0)
+
+# Étape 4 : Afficher les résultats
+print(ridge_model)
+
+# Étape 5 : Visualisation des coefficients en fonction de lambda
+plot(ridge_model, main = "Ridge Longley en fonction de la norme", ylim = c(-2, 2))
+plot(ridge_model, xvar = "lambda", main = "Ridge Longley en fonction de lambda", ylim = c(-2, 2))
+
+
+pdf("Ridge_Longley_fonction_norme.pdf", width = 7, height = 5)  # nom et taille du PDF
+plot(ridge_model, main = "Ridge Longley en fonction de la norme", ylim = c(-2, 2))       # ton graphique
+dev.off()  
+
+pdf("Ridge_Longley_fonction_lambda.pdf", width = 7, height = 5)  # nom et taille du PDF
+plot(ridge_model, xvar = "lambda", main = "Ridge Longley en fonction de lambda", ylim = c(-2, 2))       # ton graphique
+dev.off()  
+
+```
+
+### choix du paramètre de régularisation λ
+
+Nous allons utiliser **cv.glmnet** pour effectuer une validation croisée et sélectionner la meilleure valeur de pénalisation (λ)
+
+```{r}
+cv_ridge1 <- cv.glmnet(longley_X, longley_Y, alpha = 0)  # alpha = 0 pour Ridge
+
+# Visualisation des erreurs en fonction de log(λ)
+pdf("validation_croisee_ridge_Longley.pdf", width = 7, height = 5)  # nom et taille du PDF
+plot(cv_ridge1, main = "Validation croisée Ridge Longley")          # ton graphique
+dev.off()  
+
+plot(cv_ridge1, main = "Validation croisée Ridge Longley")
+
+# Extraction des valeurs optimales de lambda
+lambda_min1 <- cv_ridge1$lambda.min   # Lambda minimisant l'erreur
+lambda_1se1 <- cv_ridge1$lambda.1se   # Lambda dans la borne 1SE
+lambda_min1
+lambda_1se1
+cat("Meilleur lambda :", round(lambda_min1, 2), "et", round(lambda_1se1, 2), "\n")
+
+# Ajuster le modèle Ridge avec différents paramètres de pénalisation K (équivalent à lambda)
+ridge_model1 <- lmridge(Employed ~ GNP.deflator + GNP + Unemployed + Armed.Forces + Population, 
+                        data = longley, K = c(0, round( 0.33, 2), round(0.64, 2), round(2, 2)), scaling = "scaled")
+
+# Afficher le résumé du modèle Ridge
+summary(ridge_model1)
+
+# Vérifier la réduction des VIF
+vif.lmridge(ridge_model1)
+
+# Calcul du Condition Number (CN)
+rstats1.lmridge(ridge_model1)$CN
+
+stats_ridge2 <- rstats1.lmridge(ridge_model1)
+stats_ridge2
+```
+
+## 3. Comparaison des Moindres Carrés Ordinaires et de la régression Ridge sur des données
+
+L'objectif de cette section est de comparer les performances des modèles MCO et Ridge en analysant la **précision des coefficients estimés**, leur **significativité statistique**, et l’impact de la **régularisation Ridge sur la multicolinéarité**. En nous basant sur la littérature existante, nous évaluerons si l'utilisation de Ridge permet d'améliorer l’interprétation des résultats et de stabiliser les estimations.
+
+#### VIF
+
+```{r}
+# Définir les valeurs de lambda
+lambda_values <- c(0.33, 0.64, 2)
+
+# Ajuster le modèle Ridge pour les deux valeurs de lambda
+ridge_model_t1 <- lmridge(Employed ~ GNP.deflator + GNP + Unemployed + Armed.Forces + Population, 
+                        data = longley, K = lambda_values, scaling = "scaled")
+
+# Calcul des VIFs pour chaque lambda
+vif_values1 <- vif.lmridge(ridge_model_t1)
+
+# Transposer vif_values pour avoir les variables en lignes
+vif_values_t1 <- as.data.frame(t(vif_values1))
+
+# Ajouter les noms des variables
+vif_values_t1 <- vif_values_t1 %>%
+  tibble::rownames_to_column(var = "Variable")  # Convertir les rownames en colonne "Variable"
+
+# Renommer les colonnes pour identifier les lambdas
+colnames(vif_values_t1) <- c("Variable", "VIF_Lambda_0.33", "VIF_Lambda_0.64")
+
+# Afficher le tableau avec gt
+vif_gt1 <- vif_values_t1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Facteurs d'Inflation de la Variance (VIF) après Ridge**"),
+    subtitle = "Détection de la multicolinéarité après régularisation"
+  ) %>%
+  fmt_number(columns = c("VIF_Lambda_0.33", "VIF_Lambda_0.64"), decimals = 2)
+
+vif_gt1
+
+
+```
+
+#### CN
+
+```{r}
+# Calcul du Condition Number (CN) après Ridge
+cn_values1 <- rstats1.lmridge(ridge_model_t1)$CN
+
+# Création du tableau CN
+cn_table1 <- data.frame(
+  Métrique = c("Condition Number (CN)"),
+  CN_Lambda_0.33 = cn_values1[1],
+  CN_Lambda_0.64 = cn_values1[2]
+)
+
+# Affichage du tableau CN avec gt
+cn_gt1 <- cn_table1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Condition Number (CN) après Ridge**"),
+    subtitle = "Détection de la multicolinéarité après régularisation"
+  ) %>%
+  fmt_number(columns = c(CN_Lambda_0.33, CN_Lambda_0.64), decimals = 2)
+
+cn_gt1
+
+```
+
+Après l’application de la régression Ridge aux données **Longley**, la **multicolinéarité est considérablement réduite**.
+
+Avec **λ = 0.33**, les VIF chutent à des valeurs très faibles, variant entre **0.14 et 0.57**, ce qui signifie que les variables explicatives ne sont plus fortement redondantes. De plus, le Condition Number (CN) diminue drastiquement à **11.90**, indiquant une nette amélioration de la stabilité numérique du modèle.
+
+Lorsque λ est augmenté à **0.64**, l'effet de régularisation devient encore plus fort :
+
+-   Les VIFs tombent à des valeurs encore plus basses (0.08 - 0.32), éliminant pratiquement toute colinéarité résiduelle.
+
+-   Le CN atteint 6.63, ce qui signifie que la matrice des prédicteurs est maintenant bien conditionnée et optimisée pour les estimations des coefficients.
+
+Ces résultats montrent clairement l’efficacité de Ridge par rapport au modèle MCO classique, qui souffrait d’une multicolinéarité extrême. Avec Ridge, le modèle devient plus robuste et les coefficients sont stabilisés.
+
+Cependant, si λ est trop élevé, les coefficients sont fortement pénalisés, ce qui peut réduire leur interprétabilité. Ici, λ = 0.33 semble être un bon compromis, car il réduit la colinéarité tout en conservant une bonne interprétation des coefficients.
+
+### 1. Extraction des résultats du modèle MCO
+
+```{r}
+# Extraction des résultats MCO (OLS)
+summary_mco1 <- summary(model)
+coeff_mco1 <- summary_mco1$coefficients
+mse_mco1 <- mean(summary_mco1$residuals^2)
+r2_mco1 <- summary(model)$r.squared 
+
+```
+
+### 2. Extraction des résultats Ridge avec `rstats1.lmridge()`
+
+```{r}
+# Extraction des statistiques Ridge
+stats_ridge1 <- rstats1.lmridge(ridge_model_t1)
+# Extraction des résultats Ridge pour λ = 0.33
+summary_ridge_0.33 <- summary(ridge_model_t1)$summaries[[1]]
+coeff_ridge_0.33 <- summary_ridge_0.33$coefficients[, "Estimate"]
+se_ridge_0.33 <- summary_ridge_0.33$coefficients[, "StdErr (Sc)"]
+t_ridge_0.33 <- summary_ridge_0.33$coefficients[, "t-value (Sc)"]
+p_ridge_0.33 <- summary_ridge_0.33$coefficients[, "Pr(>|t|)"]
+
+mse_ridge_0.33 <- stats_ridge1$mse[1]
+r2_ridge_0.33 <- stats_ridge1$R2[1]
+
+# Extraction des résultats Ridge pour λ = 0.64
+summary_ridge_0.64 <- summary(ridge_model_t1)$summaries[[2]]
+coeff_ridge_0.64 <- summary_ridge_0.64$coefficients[, "Estimate"]
+se_ridge_0.64 <- summary_ridge_0.64$coefficients[, "StdErr (Sc)"]
+t_ridge_0.64 <- summary_ridge_0.64$coefficients[, "t-value (Sc)"]
+p_ridge_0.64 <- summary_ridge_0.64$coefficients[, "Pr(>|t|)"]
+
+mse_ridge_0.64 <- stats_ridge1$mse[2]
+r2_ridge_0.64 <- stats_ridge1$R2[2]
+
+```
+
+### 3. Création des tableaux de comparaison
+
+```{r}
+# Tableau des résultats MCO
+table_mco1 <- data.frame(
+  Variable = rownames(coeff_mco1),
+  Coefficient = coeff_mco1[,1],
+  Standard_Error = coeff_mco1[,2],
+  T_value = coeff_mco1[,3],
+  P_value = coeff_mco1[,4]
+)
+
+table_mco1 <- rbind(table_mco1, 
+                   c("MSE", mse_mco1, "", "", ""),
+                   c("R²", r2_mco1, "", "", ""))
+
+# Tableau des résultats Ridge (λ = 0.33)
+table_ridge_0.33 <- data.frame(
+  Variable = rownames(summary_ridge_0.33$coefficients),
+  Coefficient = coeff_ridge_0.33,
+  Standard_Error = se_ridge_0.33,
+  T_value = t_ridge_0.33,
+  P_value = p_ridge_0.33
+)
+
+table_ridge_0.33 <- rbind(table_ridge_0.33, 
+                          c("MSE", mse_ridge_0.33, "", "", ""),
+                          c("R²", r2_ridge_0.33, "", "", ""))
+
+# Tableau des résultats Ridge (λ = 0.64)
+table_ridge_0.64 <- data.frame(
+  Variable = rownames(summary_ridge_0.64$coefficients),
+  Coefficient = coeff_ridge_0.64,
+  Standard_Error = se_ridge_0.64,
+  T_value = t_ridge_0.64,
+  P_value = p_ridge_0.64
+)
+
+table_ridge_0.64 <- rbind(table_ridge_0.64, 
+                           c("MSE", mse_ridge_0.64, "", "", ""),
+                           c("R²", r2_ridge_0.64, "", "", ""))
+
+```
+
+### 4. Affichage des tableaux avec `gt()`
+
+```{r}
+
+# Formatage des tableaux MCO et Ridge avec gt()
+gt_mco <- table_mco1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression MCO (OLS)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+gt_ridge_0.33 <- table_ridge_0.33 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression Ridge (λ = 0.33)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+gt_ridge_0.64 <- table_ridge_0.64 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Résultats de la régression Ridge (λ = 0.64)**"),
+    subtitle = "Coefficients, erreurs standard, t-values et p-values"
+  ) %>%
+  fmt_number(columns = c(Coefficient, Standard_Error, T_value, P_value), decimals = 4)
+
+# Affichage des tableaux
+gt_mco
+gt_ridge_0.33
+gt_ridge_0.64
+
+```
+
+-   **Autocorrélation**
+
+```{r}
+# Appliquer le test de Durbin-Watson sur le modèle MCO
+dw_test_mco <- dwtest(model)
+
+# Afficher les résultats
+dw_test_mco
+
+```
+
+```{r}
+
+# Prédictions Ridge pour les deux lambda
+fitted_ridge_all <- predict(ridge_model_t)  # Matrice contenant toutes les prédictions
+
+# Extraire uniquement la colonne correspondant à λ = 0.33
+fitted_ridge_0.33 <- fitted_ridge_all[, "K=0.33"]
+residuals_ridge_0.33 <- longley$Employed - fitted_ridge_0.33  
+
+# Extraire uniquement la colonne correspondant à λ = 0.64
+fitted_ridge_0.64 <- fitted_ridge_all[, "K=0.64"]
+residuals_ridge_0.64 <- longley$Employed - fitted_ridge_0.64
+
+# Appliquer le test de Durbin-Watson pour Ridge (λ = 0.33)
+dw_test_ridge_0.33 <- dwtest(residuals_ridge_0.33 ~ 1)
+dw_test_ridge_0.33
+
+# Appliquer le test de Durbin-Watson pour Ridge (λ = 0.64)
+dw_test_ridge_0.64 <- dwtest(residuals_ridge_0.64 ~ 1)
+dw_test_ridge_0.64
+
+
+```
+
+```{r}
+
+# Calcul des résidus du modèle MCO
+residuals_mco <- residuals(model)
+
+# Tracer le graphique des résidus MCO
+plot(longley$Year, residuals_mco, type = "l",
+     main = "Graphique des résidus MCO",
+     xlab = "Années", ylab = "Résidus")
+points(longley$Year, residuals_mco, pch = 16)  # Ajoute des points noirs
+abline(h = 0, col = "red")  # Ligne horizontale
+
+
+# Tracer le graphique avec les résidus Ridge k=0.33
+plot(longley$Year, residuals_ridge_0.33, type = "l",
+     main = "Graphique des résidus Ridge k=0,33", xlab = "Années", ylab = "Résidus")
+points(longley$Year, residuals_ridge_0.33, pch = 16)  # Ajoute des points noirs
+abline(h = 0, col = "red")  # Ligne horizontale
+
+# Tracer le graphique avec les résidus Ridge k=0.64
+plot(longley$Year, residuals_ridge_0.64, type = "l",
+     main = "Graphique des résidus Ridge k=0,64", xlab = "Années", ylab = "Résidus")
+points(longley$Year, residuals_ridge_0.64, pch = 16)  # Ajoute des points noirs
+abline(h = 0, col = "red")
+
+```
+
+#### Le test du multiplicateur de Lagrange
+
+```{r}
+bgtest(residuals_ridge_0.33 ~ 1, order = 2,type = "Chisq")
+bgtest(residuals_ridge_0.64 ~ 1, order = 2,type = "Chisq")
+ 
+```
+
+#### **Hypothèses du test :**
+
+-   H0: Les erreurs ne sont pas autocorrélées.
+
+-   H1 : Les erreurs sont autocorrélées.
+
+#### **Pour Ridge (k = 0.33)**
+
+-   **Statistique LM = 1.5525**
+
+-   **Degré de liberté (df) = 2**
+
+-   **p-value = 0.4601**
+
+-   **Comparaison avec** χ²(2)critique =5 .99
+
+    -   1.5525\<5.99 → On ne rejette pas H0
+
+    -   La p-value est largement supérieure à 0.05, ce qui indique qu'il n'y a **pas d’autocorrélation significative**.
+
+#### **Pour Ridge (k = 0.64)**
+
+-   **Statistique LM = 1.969**
+
+-   **Degré de liberté (df) = 2**
+
+-   **p-value = 0.3736**
+
+-   **Comparaison avec** χ²(2)critique =5 .99:
+
+    -   1.969\<5.99 → On ne rejette pas H0H_0H0​.
+
+    -   La p-value est également bien supérieure à 0.05, donc **aucune autocorrélation significative**.
+
+### **Conclusion**
+
+Avec un seuil critique de χ²(2)critique =5 .99 et des p-values nettement supérieures à 0.05, on ne rejette pas l'hypothèse H0.
+
+**Les erreurs des modèles Ridge (k=0.33 et k=0.64) ne présentent pas d’autocorrélation significative.**
+
+Il est donc raisonnable de conclure que la régularisation Ridge a permis d'atténuer, voire d'éliminer, l'autocorrélation des erreurs qui pouvait être présente dans le modèle de régression initial.
+
+```{r}
+
+# Construire un modèle auxiliaire avec les variables explicatives
+aux_model_0.33 <- lm(residuals_ridge_0.33 ~ GNP.deflator + GNP + Unemployed + Armed.Forces + Population, data = longley)
+lm_test_ridge_0.33 <- bgtest(aux_model_0.33, order = 2, type = "Chisq")
+print(lm_test_ridge_0.33)
+
+aux_model_0.64 <- lm(residuals_ridge_0.64 ~ GNP.deflator + GNP + Unemployed + Armed.Forces + Population, data = longley)
+lm_test_ridge_0.64 <- bgtest(aux_model_0.64, order = 2, type = "Chisq")
+print(lm_test_ridge_0.64)
+```
+
+```{r}
+data(Cigar)
+df <- Cigar
+
+# Modèle linéaire
+model <- lm(sales ~ price +  cpi + ndi + pimin, data = df)
+
+# Résumé du modèle
+summary(model)
+
+vif(model)
+
+```
+
+```{r}
+# Charger Macrodat
+data(Macrodat)
+df_macro <- as.data.frame(Macrodat)
+
+# Voir les premières lignes
+head(df_macro)
+
+# Construire un modèle de régression avec GDPJP comme cible
+model_macro <- lm(gdpjp ~ lhur + punew + fyff + fygm3 + fygt1 + exruk, data = df_macro)
+# Régression linéaire classique
+summary(model_macro)
+modelsummary(model_macro)
+# Calcul des VIF (Variance Inflation Factor)
+vif_values <- vif(model_macro)
+vif_values
+
+```
+
+```{r}
+# Supprimer les NA pour éviter les erreurs
+df_macro <- na.omit(df_macro)
+
+# Créer la matrice des variables explicatives
+X <- model.matrix(gdpjp ~ lhur + punew + fyff + fygm3 + fygt1 + exruk, data = df_macro)[, -1]
+
+# Variable cible
+y <- df_macro$gdpjp
+
+# Appliquer Ridge Regression (alpha = 0 pour Ridge)
+ridge_model <- glmnet(X, y, alpha = 0)
+
+# Validation croisée pour trouver la meilleure valeur de lambda
+cv_ridge <- cv.glmnet(X, y, alpha = 0)
+lambda_min <- cv_ridge$lambda.min  # Meilleur lambda trouvé
+lambda_1se <- cv_ridge$lambda.1se
+# Afficher le lambda optimal
+print(paste("Meilleur lambda (lambda.min) :", round(lambda_min, 5)))
+# Réajuster le modèle Ridge avec `lmridge`
+ridge_lmridge <- lmridge(gdpjp ~ lhur + punew + fyff + fygm3 + fygt1 + exruk, 
+                         data = df_macro, 
+                         K = c(0, round( lambda_min, 2), round(lambda_1se, 2)))
+
+# Afficher le résumé du modèle Ridge
+summary(ridge_lmridge)
+
+```
+
+```{r}
+library(faraway)
+
+modele <- lm(math ~  gender + ses + schtyp + prog + read + write + science, data=hsb)
+
+# Résumé du modèle
+summary(modele)
+
+
+vif_values <- vif(modele)
+vif_values
+```
+
+```{r}
+data(divusa, package="faraway")
+
+# Ajustement du modèle
+modele1 <- lm(divorce ~ unemployed + femlab + marriage + birth + military , data=divusa)
+summary(modele1)
+# Calcul des VIF
+vif_values <- vif(modele1)
+print(vif_values)
+```
+
+```{r}
+data(diabetes, package="faraway")
+
+# Suppression des variables avec VIF > 5 ou 10 (ajuster selon les résultats
+
+# Ajustement du modèle avec les variables pertinentes
+modele_final <- lm(glyhb ~ age + chol + stab.glu + hdl + waist + hip + bp.1s, data=diabetes)
+summary(modele_final)
+# Calcul des VIF
+vif_values <- vif(modele_final)
+print(vif_values)
+
+```
